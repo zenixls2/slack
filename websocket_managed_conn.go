@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"reflect"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
 
 // ManageConnection can be called on a Slack RTM instance returned by the
@@ -142,7 +143,13 @@ func (rtm *RTM) startRTMAndDial(useRTMStart bool) (*Info, *websocket.Conn, error
 
 	rtm.Debugf("Dialing to websocket on url %s", url)
 	// Only use HTTPS for connections to prevent MITM attacks on the connection.
-	conn, err := websocketProxyDial(url, "https://api.slack.com")
+	upgradeHeader := http.Header{}
+	upgradeHeader.Add("Origin", "https://api.slack.com")
+	dialer := websocket.DefaultDialer
+	if rtm.dialer != nil {
+		dialer = rtm.dialer
+	}
+	conn, _, err := dialer.Dial(url, upgradeHeader)
 	if err != nil {
 		rtm.Debugf("Failed to dial to the websocket: %s", err)
 		return nil, nil, err
@@ -227,7 +234,7 @@ func (rtm *RTM) sendWithDeadline(msg interface{}) error {
 	if err := rtm.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
 	}
-	if err := websocket.JSON.Send(rtm.conn, msg); err != nil {
+	if err := rtm.conn.WriteJSON(msg); err != nil {
 		return err
 	}
 	// remove write deadline
@@ -282,27 +289,28 @@ func (rtm *RTM) ping() error {
 // This will block until a frame is available from the websocket.
 func (rtm *RTM) receiveIncomingEvent() {
 	event := json.RawMessage{}
-	err := websocket.JSON.Receive(rtm.conn, &event)
-	if err == io.EOF {
+	err := rtm.conn.ReadJSON(&event)
+	switch {
+	case err == io.EOF:
 		// EOF's don't seem to signify a failed connection so instead we ignore
 		// them here and detect a failed connection upon attempting to send a
 		// 'PING' message
 
-		// trigger a 'PING' to detect pontential websocket disconnect
+		// trigger a 'PING' to detect potential websocket disconnect
 		rtm.forcePing <- true
-		return
-	} else if err != nil {
+	case websocket.IsCloseError(err, websocket.CloseAbnormalClosure):
+		rtm.killChannel <- false
+	case err != nil:
 		rtm.IncomingEvents <- RTMEvent{"incoming_error", &IncomingEventError{
 			ErrorObj: err,
 		}}
 		// force a ping here too?
-		return
-	} else if len(event) == 0 {
+	case len(event) == 0:
 		rtm.Debugln("Received empty event")
-		return
+	default:
+		rtm.Debugln("Incoming Event:", string(event[:]))
+		rtm.rawEvents <- event
 	}
-	rtm.Debugln("Incoming Event:", string(event[:]))
-	rtm.rawEvents <- event
 }
 
 // handleRawEvent takes a raw JSON message received from the slack websocket
@@ -340,7 +348,13 @@ func (rtm *RTM) handleAck(event json.RawMessage) {
 	if ack.Ok {
 		rtm.IncomingEvents <- RTMEvent{"ack", ack}
 	} else if ack.RTMResponse.Error != nil {
-		rtm.IncomingEvents <- RTMEvent{"ack_error", &AckErrorEvent{ack.Error}}
+		// As there is no documentation for RTM error-codes, this
+		// identification of a rate-limit warning is very brittle.
+		if ack.RTMResponse.Error.Code == -1 && ack.RTMResponse.Error.Msg == "slow down, too many messages..." {
+			rtm.IncomingEvents <- RTMEvent{"ack_error", &RateLimitEvent{}}
+		} else {
+			rtm.IncomingEvents <- RTMEvent{"ack_error", &AckErrorEvent{ack.Error}}
+		}
 	} else {
 		rtm.IncomingEvents <- RTMEvent{"ack_error", &AckErrorEvent{fmt.Errorf("ack decode failure")}}
 	}
@@ -472,4 +486,7 @@ var eventMapping = map[string]interface{}{
 	"accounts_changed": AccountsChangedEvent{},
 
 	"reconnect_url": ReconnectUrlEvent{},
+
+	"member_joined_channel": MemberJoinedChannelEvent{},
+	"member_left_channel": MemberLeftChannelEvent{},
 }

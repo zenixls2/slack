@@ -10,10 +10,10 @@ import (
 
 const (
 	DEFAULT_MESSAGE_USERNAME         = ""
-	DEFAULT_MESSAGE_THREAD_TIMESTAMP = ""
 	DEFAULT_MESSAGE_REPLY_BROADCAST  = false
 	DEFAULT_MESSAGE_ASUSER           = false
 	DEFAULT_MESSAGE_PARSE            = ""
+	DEFAULT_MESSAGE_THREAD_TIMESTAMP = ""
 	DEFAULT_MESSAGE_LINK_NAMES       = 0
 	DEFAULT_MESSAGE_UNFURL_LINKS     = false
 	DEFAULT_MESSAGE_UNFURL_MEDIA     = true
@@ -32,7 +32,6 @@ type chatResponseFull struct {
 
 // PostMessageParameters contains all the parameters necessary (including the optional ones) for a PostMessage() request
 type PostMessageParameters struct {
-	Text            string       `json:"text"`
 	Username        string       `json:"user_name"`
 	AsUser          bool         `json:"as_user"`
 	Parse           string       `json:"parse"`
@@ -55,18 +54,19 @@ type PostMessageParameters struct {
 // NewPostMessageParameters provides an instance of PostMessageParameters with all the sane default values set
 func NewPostMessageParameters() PostMessageParameters {
 	return PostMessageParameters{
-		Username:    DEFAULT_MESSAGE_USERNAME,
-		User:        DEFAULT_MESSAGE_USERNAME,
-		AsUser:      DEFAULT_MESSAGE_ASUSER,
-		Parse:       DEFAULT_MESSAGE_PARSE,
-		LinkNames:   DEFAULT_MESSAGE_LINK_NAMES,
-		Attachments: nil,
-		UnfurlLinks: DEFAULT_MESSAGE_UNFURL_LINKS,
-		UnfurlMedia: DEFAULT_MESSAGE_UNFURL_MEDIA,
-		IconURL:     DEFAULT_MESSAGE_ICON_URL,
-		IconEmoji:   DEFAULT_MESSAGE_ICON_EMOJI,
-		Markdown:    DEFAULT_MESSAGE_MARKDOWN,
-		EscapeText:  DEFAULT_MESSAGE_ESCAPE_TEXT,
+		Username:        DEFAULT_MESSAGE_USERNAME,
+		User:            DEFAULT_MESSAGE_USERNAME,
+		AsUser:          DEFAULT_MESSAGE_ASUSER,
+		Parse:           DEFAULT_MESSAGE_PARSE,
+		ThreadTimestamp: DEFAULT_MESSAGE_THREAD_TIMESTAMP,
+		LinkNames:       DEFAULT_MESSAGE_LINK_NAMES,
+		Attachments:     nil,
+		UnfurlLinks:     DEFAULT_MESSAGE_UNFURL_LINKS,
+		UnfurlMedia:     DEFAULT_MESSAGE_UNFURL_MEDIA,
+		IconURL:         DEFAULT_MESSAGE_ICON_URL,
+		IconEmoji:       DEFAULT_MESSAGE_ICON_EMOJI,
+		Markdown:        DEFAULT_MESSAGE_MARKDOWN,
+		EscapeText:      DEFAULT_MESSAGE_ESCAPE_TEXT,
 	}
 }
 
@@ -125,14 +125,14 @@ func (api *Client) PostEphemeral(channel, userID string, options ...MsgOption) (
 // PostEphemeralContext sends an ephemeal message to a user in a channel with a custom context
 // For more details, see PostEphemeral documentation
 func (api *Client) PostEphemeralContext(ctx context.Context, channel, userID string, options ...MsgOption) (string, error) {
-	path, values, err := ApplyMsgOptions(api.config.token, channel, options...)
+	path, values, err := ApplyMsgOptions(api.token, channel, options...)
 	if err != nil {
 		return "", err
 	}
 
 	values.Add("user", userID)
 
-	response, err := chatRequest(ctx, path, values, api.debug)
+	response, err := chatRequest(ctx, api.httpclient, path, values, api.debug)
 	if err != nil {
 		return "", err
 	}
@@ -145,7 +145,7 @@ func (api *Client) UpdateMessage(channel, timestamp, text string) (string, strin
 	return api.UpdateMessageContext(context.Background(), channel, timestamp, text)
 }
 
-// UpdateMessage updates a message in a channel
+// UpdateMessageContext updates a message in a channel
 func (api *Client) UpdateMessageContext(ctx context.Context, channel, timestamp, text string) (string, string, string, error) {
 	return api.SendMessageContext(ctx, channel, MsgOptionUpdate(timestamp), MsgOptionText(text, true))
 }
@@ -157,12 +157,12 @@ func (api *Client) SendMessage(channel string, options ...MsgOption) (string, st
 
 // SendMessageContext more flexible method for configuring messages with a custom context.
 func (api *Client) SendMessageContext(ctx context.Context, channel string, options ...MsgOption) (string, string, string, error) {
-	channel, values, err := ApplyMsgOptions(api.config.token, channel, options...)
+	channel, values, err := ApplyMsgOptions(api.token, channel, options...)
 	if err != nil {
 		return "", "", "", err
 	}
 
-	response, err := chatRequest(ctx, channel, values, api.debug)
+	response, err := chatRequest(ctx, api.httpclient, channel, values, api.debug)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -194,9 +194,9 @@ func escapeMessage(message string) string {
 	return replacer.Replace(message)
 }
 
-func chatRequest(ctx context.Context, path string, values url.Values, debug bool) (*chatResponseFull, error) {
+func chatRequest(ctx context.Context, client HTTPRequester, path string, values url.Values, debug bool) (*chatResponseFull, error) {
 	response := &chatResponseFull{}
-	err := post(ctx, path, values, response, debug)
+	err := post(ctx, client, path, values, response, debug)
 	if err != nil {
 		return nil, err
 	}
@@ -300,6 +300,14 @@ func MsgOptionAttachments(attachments ...Attachment) MsgOption {
 func MsgOptionEnableLinkUnfurl() MsgOption {
 	return func(config *sendConfig) error {
 		config.values.Set("unfurl_links", "true")
+		return nil
+	}
+}
+
+// MsgOptionDisableLinkUnfurl disables link unfurling
+func MsgOptionDisableLinkUnfurl() MsgOption {
+	return func(config *sendConfig) error {
+		config.values.Set("unfurl_links", "false")
 		return nil
 	}
 }
